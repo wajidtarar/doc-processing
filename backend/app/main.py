@@ -1,3 +1,6 @@
+import os
+import tempfile
+
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -5,6 +8,12 @@ from uuid import UUID
 from app.database import get_db
 from app import models, schemas
 from fastapi.middleware.cors import CORSMiddleware
+
+from fastapi import UploadFile, File
+from app.extraction import extract_invoice
+
+from app.extraction import extract_invoice_with_routing
+
 
 app = FastAPI(title="Doc Processing API")
 
@@ -54,3 +63,28 @@ def get_invoice(invoice_id: UUID, db: Session = Depends(get_db)):
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
     return invoice
+
+@app.post("/invoices/extract1")
+async def extract_invoice_endpoint(file: UploadFile = File(...)):
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        extracted = extract_invoice(tmp_path)
+        return extracted
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/invoices/extract")
+async def extract_invoice_endpoint(file: UploadFile = File(...)):
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        extracted = extract_invoice_with_routing(tmp_path)
+        return extracted
+    finally:
+        os.unlink(tmp_path)

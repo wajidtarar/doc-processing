@@ -88,3 +88,14 @@ async def extract_invoice_endpoint(file: UploadFile = File(...)):
         return extracted
     finally:
         os.unlink(tmp_path)
+
+
+from pydantic import BaseModel
+from app.rag import query_invoices
+
+class InvoiceQuery(BaseModel):
+    question: str
+
+@app.post("/invoices/query")
+def query_invoices_endpoint(payload: InvoiceQuery):
+    return query_invoices(payload.question)

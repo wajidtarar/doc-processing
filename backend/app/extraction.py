@@ -104,7 +104,7 @@ def extract_invoice_with_routing(file_path: str) -> dict:
         problems = validate_extraction(data)
 
         if not problems:
-            data["_extraction_model"] = model
+            data["_extraction_model"] = modelf
             data["_extraction_attempt"] = attempt + 1
             return data
 

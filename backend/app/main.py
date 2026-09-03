@@ -1,6 +1,9 @@
 import os
 import tempfile
 
+from app.logging_config import setup_logging
+setup_logging()
+
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -78,17 +81,35 @@ async def extract_invoice_endpoint(file: UploadFile = File(...)):
         os.unlink(tmp_path)
 
 
+
+from app.exceptions import ExtractionError, UnsupportedFileTypeError
+
+ALLOWED_CONTENT_TYPES = {"application/pdf", "image/jpeg", "image/png"}
+
 @app.post("/invoices/extract")
 async def extract_invoice_endpoint(file: UploadFile = File(...)):
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file.content_type}. Allowed: PDF, JPEG, PNG.",
+        )
+
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(await file.read())
+        content = await file.read()
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+        tmp.write(content)
         tmp_path = tmp.name
 
     try:
         extracted = extract_invoice_with_routing(tmp_path)
         return extracted
+    except ExtractionError as e:
+        raise HTTPException(status_code=502, detail=str(e))  # 502: upstream (Gemini) failure, not our bug
     finally:
         os.unlink(tmp_path)
+    
+
 
 
 from pydantic import BaseModel
@@ -142,3 +163,4 @@ def confirm_invoice(payload: schemas.InvoiceConfirm, db: Session = Depends(get_d
     db.commit()
     db.refresh(invoice)
     return invoice
+

@@ -5,6 +5,13 @@ from app.ai_config import MODEL_FLASH_LITE
 from decimal import Decimal, InvalidOperation
 from app.ai_config import MODEL_FLASH
 
+from app.gemini_client import call_gemini
+from app.exceptions import ExtractionError
+
+import logging
+logger = logging.getLogger("extraction")
+
+
 # JSON schema Gemini is forced to conform to. Mirrors schemas.InvoiceCreate,
 # with quantity as a string on purpose (see Phase 1 notes — "40 hrs", "12 months").
 INVOICE_SCHEMA = {
@@ -90,21 +97,26 @@ def extract_invoice_with_routing(file_path: str) -> dict:
     uploaded = upload_file(file_path)
 
     for attempt, model in enumerate([MODEL_FLASH_LITE, MODEL_FLASH]):
-        response = client.models.generate_content(
-            model=model,
-            contents=[uploaded, EXTRACTION_PROMPT],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=INVOICE_SCHEMA,
-                media_resolution="MEDIA_RESOLUTION_HIGH",
-            ),
-        )
+        try:
+            response = call_gemini(
+                model=model,
+                contents=[uploaded, EXTRACTION_PROMPT],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=INVOICE_SCHEMA,
+                    media_resolution="MEDIA_RESOLUTION_HIGH",
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Gemini call failed after retries for model={model}: {e}")
+            raise ExtractionError(f"Extraction failed after retries: {e}")
+
         import json
         data = json.loads(response.text)
         problems = validate_extraction(data)
 
         if not problems:
-            data["_extraction_model"] = modelf
+            data["_extraction_model"] = model
             data["_extraction_attempt"] = attempt + 1
             return data
 
@@ -134,14 +146,18 @@ def extract_invoice_via_function_call(file_path: str) -> dict:
     actions, not just always return the same shape."""
     uploaded = upload_file(file_path)
 
-    response = client.models.generate_content(
-        model=MODEL_FLASH_LITE,
-        contents=[uploaded, EXTRACTION_PROMPT],
-        config=types.GenerateContentConfig(
-            tools=[invoice_tool],
-            media_resolution="MEDIA_RESOLUTION_HIGH",
-        ),
-    )
+    try:
+        response = call_gemini(
+            model=MODEL_FLASH_LITE,
+            contents=[uploaded, EXTRACTION_PROMPT],
+            config=types.GenerateContentConfig(
+                tools=[invoice_tool],
+                media_resolution="MEDIA_RESOLUTION_HIGH",
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Gemini call failed after retries for model={MODEL_FLASH_LITE}: {e}")
+        raise ExtractionError(f"Extraction failed after retries: {e}")
 
     call = response.candidates[0].content.parts[0].function_call
     if call is None or call.name != "save_extracted_invoice":
@@ -187,11 +203,16 @@ def classify_and_extract(file_path: str, mime_type: str = "application/pdf") -> 
     single fixed shape, which responseSchema handled better."""
     uploaded = upload_file(file_path, mime_type=mime_type)
 
-    response = client.models.generate_content(
-        model=MODEL_FLASH,  # use the stronger model — classification judgment matters more than raw extraction
-        contents=[uploaded, "Determine what kind of document this is and call the single most appropriate function."],
-        config=types.GenerateContentConfig(tools=[classification_tool]),
-    )
+    try:
+        response = call_gemini(
+            model=MODEL_FLASH_LITE,
+            contents=[uploaded, "Determine what kind of document this is and call the single most appropriate function."],
+            config=types.GenerateContentConfig(tools=[classification_tool]),
+        )
+    except Exception as e:
+        logger.error(f"Gemini call failed after retries for model={MODEL_FLASH_LITE}: {e}")
+        raise ExtractionError(f"Extraction failed after retries: {e}")
+
 
     call = response.candidates[0].content.parts[0].function_call
     if call is None:

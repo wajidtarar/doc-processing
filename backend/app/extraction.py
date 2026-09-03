@@ -148,3 +148,53 @@ def extract_invoice_via_function_call(file_path: str) -> dict:
         raise ValueError(f"Expected a function call, got: {response.text}")
 
     return dict(call.args)
+
+FLAG_PURCHASE_ORDER_FUNCTION = types.FunctionDeclaration(
+    name="flag_as_purchase_order",
+    description="Call this if the document is a purchase order, not an invoice — it authorizes a future purchase rather than billing for a completed one.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "po_number": {"type": "string"},
+            "vendor_name": {"type": "string"},
+            "reason": {"type": "string", "description": "Brief note on what distinguishes it from an invoice"},
+        },
+        "required": ["reason"],
+    },
+)
+
+FLAG_SPAM_FUNCTION = types.FunctionDeclaration(
+    name="flag_as_spam_or_irrelevant",
+    description="Call this if the document is not a business billing document at all — spam, an unrelated file, a resume, an article, etc.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "description": "Brief note on what the document actually appears to be"},
+        },
+        "required": ["reason"],
+    },
+)
+
+classification_tool = types.Tool(
+    function_declarations=[SAVE_INVOICE_FUNCTION, FLAG_PURCHASE_ORDER_FUNCTION, FLAG_SPAM_FUNCTION]
+)
+
+
+def classify_and_extract(file_path: str, mime_type: str = "application/pdf") -> dict:
+    """Given an arbitrary uploaded document, let Gemini decide which of
+    three actions applies, instead of assuming everything is an invoice.
+    This is the real use case function calling is for — Phase 3 forced a
+    single fixed shape, which responseSchema handled better."""
+    uploaded = upload_file(file_path, mime_type=mime_type)
+
+    response = client.models.generate_content(
+        model=MODEL_FLASH,  # use the stronger model — classification judgment matters more than raw extraction
+        contents=[uploaded, "Determine what kind of document this is and call the single most appropriate function."],
+        config=types.GenerateContentConfig(tools=[classification_tool]),
+    )
+
+    call = response.candidates[0].content.parts[0].function_call
+    if call is None:
+        return {"action": "unknown", "raw_response": response.text}
+
+    return {"action": call.name, "args": dict(call.args)}

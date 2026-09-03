@@ -12,7 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File
 from app.extraction import extract_invoice
 
-from app.extraction import extract_invoice_with_routing
+from app.extraction import extract_invoice_with_routing, validate_extraction
+from decimal import Decimal as Dec
 
 
 app = FastAPI(title="Doc Processing API")
@@ -99,3 +100,45 @@ class InvoiceQuery(BaseModel):
 @app.post("/invoices/query")
 def query_invoices_endpoint(payload: InvoiceQuery):
     return query_invoices(payload.question)
+
+
+@app.post("/invoices/confirm", response_model=schemas.InvoiceOut, status_code=201)
+def confirm_invoice(payload: schemas.InvoiceConfirm, db: Session = Depends(get_db)):
+    # Re-run the same validation extraction used — never trust that
+    # frontend edits are still internally consistent.
+    problems = validate_extraction(payload.model_dump(mode="json"))
+    if problems:
+        raise HTTPException(status_code=422, detail={"validation_errors": problems})
+
+    invoice = models.Invoice(
+        vendor_name=payload.vendor_name,
+        invoice_number=payload.invoice_number,
+        invoice_date=payload.invoice_date,
+        due_date=payload.due_date,
+        customer_reference=payload.customer_reference,
+        currency=payload.currency,
+        subtotal=payload.subtotal,
+        vat_rate=payload.vat_rate,
+        vat_amount=payload.vat_amount,
+        total=payload.total,
+    )
+    invoice.line_items = [
+        models.InvoiceLineItem(**item.model_dump()) for item in payload.line_items
+    ]
+    db.add(invoice)
+    db.flush()  # get invoice.id without committing yet
+
+    # --- Workflow trigger: the actual point of the feature ---
+    if payload.due_date is not None:
+        task = models.PaymentTask(
+            invoice_id=invoice.id,
+            due_date=payload.due_date,
+            amount=payload.total,
+            currency=payload.currency,
+            status="pending",
+        )
+        db.add(task)
+
+    db.commit()
+    db.refresh(invoice)
+    return invoice
